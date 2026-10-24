@@ -546,17 +546,22 @@ def load_google():
     return df
 
 def apply_pesq_spend(df):
+    # A aba de palavras-chave não traz o tráfego sem palavra-chave (ampla/AI Max/dinâmicos).
+    # Completa spend, conversões, cliques e impressões por campanha+grupo+dia com a aba google-ads-pesquisa,
+    # para os totais baterem com o Google Ads. O excedente vira a linha "(sem palavra-chave)".
     global _dfp_pesquisa
     if _dfp_pesquisa.empty: return df
-    df=df.copy(); df["date"]=pd.to_datetime(df["date"],errors="coerce"); extras=[]
-    for camp in _dfp_pesquisa["campaign"].unique():
-        for dt in _dfp_pesquisa[_dfp_pesquisa["campaign"]==camp]["date"].unique():
-            sp_pesq=float(_dfp_pesquisa[(_dfp_pesquisa["campaign"]==camp)&(_dfp_pesquisa["date"]==dt)]["spend"].sum())
-            mask=(df["campaign"]==camp)&(df["date"]==dt); sp_kw=float(df[mask]["spend"].sum())
-            diff=round(sp_pesq-sp_kw,4)
-            if diff>0.01: extras.append({"date":dt,"campaign":camp,"adgroup":"","keyword":"__pesq_diff__","match_type":"","spend":diff,"conversions":0,"clicks":0,"impressions":0,"is_search":True})
-    if not extras: return df
-    return pd.concat([df,pd.DataFrame(extras)],ignore_index=True)
+    df=df.copy(); df["date"]=pd.to_datetime(df["date"],errors="coerce")
+    M=["spend","conversions","clicks","impressions"]; K=["campaign","adgroup","date"]
+    pq=_dfp_pesquisa.copy(); pq["adgroup"]=pq["adgroup"].fillna("").astype(str)
+    pq=pq.groupby(K)[M].sum()
+    src=df[df["is_search"]==True].copy(); src["adgroup"]=src["adgroup"].fillna("").astype(str)
+    kw=src.groupby(K)[M].sum().reindex(pq.index,fill_value=0)
+    diff=(pq-kw).clip(lower=0)
+    diff=diff[(diff["spend"]>0.01)|(diff["conversions"]>0.001)|(diff["clicks"]>0)|(diff["impressions"]>0)].reset_index()
+    if not len(diff): return df
+    diff["keyword"]="(sem palavra-chave)"; diff["match_type"]="—"; diff["is_search"]=True
+    return pd.concat([df,diff[df.columns.intersection(diff.columns)]],ignore_index=True)
 
 def google_daily(df):
     agg=df.groupby("date").agg(spend=("spend","sum"),conversions=("conversions","sum"),
@@ -745,12 +750,12 @@ def main():
         df_google_corr=apply_pesq_spend(df_google)
         g_daily=google_daily(df_google_corr)
         g_kpis=google_kpis(df_google_corr)
-        g_camps=google_camps(df_google)
+        g_camps=google_camps(df_google_corr)
         g_kw=google_keywords(df_google)
         g_bd=google_breakdowns(df_google)
         g_month=google_monthly(df_google_corr)
         g_raw=google_raw(df_google_corr)
-        print(f"  ✓ {df_google['conversions'].sum():.0f} conv. | {MOEDA_SIMBOLO} {df_google['spend'].sum():,.2f} invest.")
+        print(f"  ✓ {df_google_corr['conversions'].sum():.0f} conv. | {MOEDA_SIMBOLO} {df_google_corr['spend'].sum():,.2f} invest.")
     except Exception as e:
         print(f"  Aviso Google: {e}")
         g_daily={"days":[],"spend":[],"conversions":[],"cpa":[],"ctr":[],"cpc":[]}
